@@ -1,0 +1,1 @@
+This repository implements a succinct index for a bit vector.
