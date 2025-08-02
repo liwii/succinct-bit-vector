@@ -29,10 +29,10 @@ private:
     int large_block_size;
     int small_block_size;
 
-    // Select Data Structures (Inverted Logic)
+    // Select Data Structures
     std::vector<unsigned int> select_index;
-    std::vector<SelectNode*> dense_block_search_trees; // For dense blocks
-    std::vector<std::vector<unsigned int>> sparse_block_lookups; // For sparse blocks
+    std::vector<SelectNode*> dense_block_search_trees;
+    std::vector<std::vector<unsigned int>> sparse_block_lookups;
     std::vector<int> sparse_block_map;
     std::vector<bool> is_sparse_block;
     int select_block_ones;
@@ -58,6 +58,15 @@ private:
         }
         return node;
     }
+    
+    size_t get_tree_size(SelectNode* node) const {
+        if (!node) return 0;
+        size_t current_size = sizeof(SelectNode) + node->child_counts.capacity() * sizeof(int) + node->children.capacity() * sizeof(SelectNode*);
+        for (SelectNode* child : node->children) {
+            current_size += get_tree_size(child);
+        }
+        return current_size;
+    }
 
 public:
     BitVector(int n) : num_bits(n) {
@@ -70,7 +79,6 @@ public:
         small_block_size = std::max(1, log_n / 2);
         if (large_block_size == 0) large_block_size = 1;
 
-        // Build Rank indices (as before)
         int num_small_blocks = (num_bits + small_block_size - 1) / small_block_size;
         small_block_keys.resize(num_small_blocks, 0);
         int lookup_size = 1 << small_block_size;
@@ -98,7 +106,6 @@ public:
         }
         small_block_keys[(num_bits - 1) / small_block_size] = current_key;
 
-        // Build Select structures (Inverted Logic)
         k_ary_branch_factor = std::max(2, (int)sqrt(log_n));
         long long sparse_threshold = log_n * log_n * log_n * log_n;
         is_sparse_block.resize(select_index.size(), false);
@@ -109,7 +116,7 @@ public:
         for (size_t i = 0; i < select_index.size(); ++i) {
             int start = select_index[i];
             int end = (i + 1 < select_index.size()) ? select_index[i+1] - 1 : num_bits - 1;
-            if ((end - start + 1) > sparse_threshold) { // Sparse block
+            if ((end - start + 1) > sparse_threshold) {
                 is_sparse_block[i] = true;
                 sparse_block_map[i] = sparse_counter++;
                 std::vector<unsigned int> positions;
@@ -117,7 +124,7 @@ public:
                     if (bits[j]) positions.push_back(j);
                 }
                 sparse_block_lookups.push_back(positions);
-            } else { // Dense block
+            } else {
                 is_sparse_block[i] = false;
                 dense_block_search_trees[i] = build_select_tree(start, end);
             }
@@ -126,7 +133,22 @@ public:
 
     ~BitVector() { for (SelectNode* tree : dense_block_search_trees) if(tree) delete tree; }
 
-    size_t memory_usage_bytes() const { return 0; }
+    size_t mem_bits() const { return (bits.capacity() + 7) / 8; }
+    size_t mem_rank_large_blocks() const { return rank_large_blocks.capacity() * sizeof(unsigned int); }
+    size_t mem_rank_small_blocks() const { return rank_small_blocks.capacity() * sizeof(unsigned short); }
+    size_t mem_small_block_keys() const { return small_block_keys.capacity() * sizeof(unsigned int); }
+    size_t mem_popcount_lookup() const { return popcount_lookup.capacity() * sizeof(unsigned char); }
+    size_t mem_select_index() const { return select_index.capacity() * sizeof(unsigned int); }
+    size_t mem_dense_block_search_trees() const {
+        size_t total_size = 0;
+        for (SelectNode* tree : dense_block_search_trees) total_size += get_tree_size(tree);
+        return total_size;
+    }
+    size_t mem_sparse_block_lookups() const {
+        size_t total_size = 0;
+        for (const auto& vec : sparse_block_lookups) total_size += vec.capacity() * sizeof(unsigned int);
+        return total_size;
+    }
 
     int rank(int i) const {
         if (i < 0 || i >= num_bits) return -1;
@@ -149,7 +171,6 @@ public:
         if (k <= 0 || k > total_ones_count) return -1;
         int block_idx = (k - 1) / select_block_ones;
         int rank_in_block = (k - 1) % select_block_ones;
-
         if (is_sparse_block[block_idx]) {
             int sparse_map_idx = sparse_block_map[block_idx];
             return sparse_block_lookups[sparse_map_idx][rank_in_block];
@@ -176,7 +197,6 @@ public:
         }
         return -1;
     }
-
     int select_naive(int k) const {
         if (k <= 0) return -1;
         int ones_counted = 0;
@@ -193,11 +213,14 @@ public:
     int total_ones() const { return total_ones_count; }
 };
 
+void print_header(const std::string& title) { std::cout << "\n--- " << title << " ---" << std::endl; }
+void print_mem_line(const std::string& name, size_t bytes) {
+    std::cout << std::left << std::setw(35) << name << std::setw(15) << bytes << " bytes" << "(" << std::fixed << std::setprecision(2) << static_cast<double>(bytes) / 1024.0 << " KB)" << std::endl;
+}
 void print_rank_header() {
     std::cout << std::left << std::setw(12) << "Index" << std::setw(18) << "Indexed Result" << std::setw(18) << "Naive Result" << std::setw(25) << "Indexed Time (us)" << std::setw(25) << "Naive Time (us)" << std::endl;
     std::cout << std::string(98, '-') << std::endl;
 }
-
 void print_select_header() {
     std::cout << std::left << std::setw(12) << "K-th One" << std::setw(18) << "Indexed Result" << std::setw(18) << "Naive Result" << std::setw(25) << "Indexed Time (us)" << std::setw(25) << "Naive Time (us)" << std::endl;
     std::cout << std::string(98, '-') << std::endl;
@@ -209,8 +232,37 @@ int main() {
 
     std::cout << "Bit vector size: " << bit_vector.size() << " bits" << std::endl;
     std::cout << "Total ones: " << bit_vector.total_ones() << std::endl;
-    
-    std::cout << "\n--- Rank Performance Comparison ---" << std::endl;
+
+    print_header("Memory Usage Breakdown");
+    size_t mem_raw = bit_vector.mem_bits();
+    size_t mem_rank_large = bit_vector.mem_rank_large_blocks();
+    size_t mem_rank_small = bit_vector.mem_rank_small_blocks();
+    size_t mem_rank_keys = bit_vector.mem_small_block_keys();
+    size_t mem_rank_popcount = bit_vector.mem_popcount_lookup();
+    size_t total_rank_mem = mem_rank_large + mem_rank_small + mem_rank_keys + mem_rank_popcount;
+    size_t mem_select_idx = bit_vector.mem_select_index();
+    size_t mem_select_trees = bit_vector.mem_dense_block_search_trees();
+    size_t mem_select_lookups = bit_vector.mem_sparse_block_lookups();
+    size_t total_select_mem = mem_select_idx + mem_select_trees + mem_select_lookups;
+    size_t total_mem = mem_raw + total_rank_mem + total_select_mem;
+    print_mem_line("Raw Bit Vector", mem_raw);
+    print_header("Rank Structures");
+    print_mem_line("rank_large_blocks", mem_rank_large);
+    print_mem_line("rank_small_blocks", mem_rank_small);
+    print_mem_line("small_block_keys", mem_rank_keys);
+    print_mem_line("popcount_lookup", mem_rank_popcount);
+    std::cout << std::string(70, '-') << std::endl;
+    print_mem_line("Total for Rank()", total_rank_mem);
+    print_header("Select Structures");
+    print_mem_line("select_index", mem_select_idx);
+    print_mem_line("dense_block_search_trees", mem_select_trees);
+    print_mem_line("sparse_block_lookups", mem_select_lookups);
+    std::cout << std::string(70, '-') << std::endl;
+    print_mem_line("Total for Select()", total_select_mem);
+    print_header("Grand Total");
+    print_mem_line("Total Calculated Memory", total_mem);
+
+    print_header("Rank Performance Comparison");
     print_rank_header();
     std::vector<int> rank_test_indices = { 0, num_bits / 4, num_bits / 2, 3 * num_bits / 4, num_bits - 1 };
     for (int index : rank_test_indices) {
@@ -225,7 +277,7 @@ int main() {
         std::cout << std::left << std::setw(12) << index << std::setw(18) << rank_result_indexed << std::setw(18) << rank_result_naive << std::setw(25) << time_indexed.count() << std::setw(25) << time_naive.count() << std::endl;
     }
 
-    std::cout << "\n--- Select Performance Comparison (Inverted Logic) ---" << std::endl;
+    print_header("Select Performance Comparison");
     print_select_header();
     int total_ones = bit_vector.total_ones();
     std::vector<int> select_test_indices;
@@ -234,7 +286,6 @@ int main() {
         if (total_ones > 2) select_test_indices.push_back(total_ones / 2);
         select_test_indices.push_back(total_ones);
     }
-
     for (int k : select_test_indices) {
         auto start_indexed = std::chrono::high_resolution_clock::now();
         int result_indexed = bit_vector.select(k);
