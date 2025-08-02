@@ -12,6 +12,7 @@ private:
     std::vector<bool> bits;
     std::vector<unsigned int> rank_large_blocks;
     std::vector<unsigned short> rank_small_blocks;
+    std::vector<unsigned int> small_block_keys; // New: Stores the integer representation of each small block
     std::vector<unsigned char> popcount_lookup;
     int large_block_size;
     int small_block_size;
@@ -31,6 +32,9 @@ public:
         
         if (large_block_size == 0) large_block_size = 1;
 
+        int num_small_blocks = (num_bits + small_block_size - 1) / small_block_size;
+        small_block_keys.resize(num_small_blocks, 0);
+
         // Initialize popcount lookup table
         int lookup_size = 1 << small_block_size;
         popcount_lookup.resize(lookup_size, 0);
@@ -38,17 +42,21 @@ public:
             popcount_lookup[i] = __builtin_popcount(i);
         }
 
-        // Initialize rank indices
+        // Initialize rank indices and small_block_keys
         int num_large_blocks = (num_bits + large_block_size - 1) / large_block_size;
         rank_large_blocks.resize(num_large_blocks + 1, 0);
-        int num_small_blocks = (num_bits + small_block_size - 1) / small_block_size;
         rank_small_blocks.resize(num_small_blocks + 1, 0);
 
         unsigned int large_rank = 0;
         unsigned short small_rank = 0;
+        unsigned int current_key = 0;
         for (int i = 0; i < num_bits; ++i) {
             if (i > 0 && i % large_block_size == 0) {
                 small_rank = 0;
+            }
+            if (i > 0 && i % small_block_size == 0) {
+                small_block_keys[(i-1) / small_block_size] = current_key;
+                current_key = 0;
             }
             if (i % large_block_size == 0) {
                 rank_large_blocks[i / large_block_size] = large_rank;
@@ -56,19 +64,23 @@ public:
             if (i % small_block_size == 0) {
                 rank_small_blocks[i / small_block_size] = small_rank;
             }
+            
             if (bits[i]) {
                 large_rank++;
                 small_rank++;
+                current_key |= (1 << (i % small_block_size));
             }
         }
+        small_block_keys[(num_bits - 1) / small_block_size] = current_key; // Store the last key
     }
 
     size_t memory_usage_bytes() const {
-        size_t bits_mem = (bits.size() + 7) / 8; // std::vector<bool> is packed
+        size_t bits_mem = (bits.size() + 7) / 8;
         size_t large_idx_mem = rank_large_blocks.size() * sizeof(unsigned int);
         size_t small_idx_mem = rank_small_blocks.size() * sizeof(unsigned short);
+        size_t keys_mem = small_block_keys.size() * sizeof(unsigned int);
         size_t lookup_mem = popcount_lookup.size() * sizeof(unsigned char);
-        return bits_mem + large_idx_mem + small_idx_mem + lookup_mem;
+        return bits_mem + large_idx_mem + small_idx_mem + keys_mem + lookup_mem;
     }
 
     int rank(int i) const {
@@ -80,16 +92,14 @@ public:
 
         int count = rank_large_blocks[large_idx] + rank_small_blocks[small_idx];
 
-        // Build the key for the lookup table by iterating over the last few bits
-        unsigned int lookup_key = 0;
-        int start_of_scan = small_idx * small_block_size;
-        for (int k = 0; k <= pos_in_small_block; ++k) {
-            if (start_of_scan + k < num_bits && bits[start_of_scan + k]) {
-                lookup_key |= (1 << k);
-            }
-        }
+        // Fetch the pre-computed key for the small block
+        unsigned int key = small_block_keys[small_idx];
         
-        return count + popcount_lookup[lookup_key];
+        // Create a mask to isolate the bits up to the position
+        unsigned int mask = (pos_in_small_block == 31) ? -1U : (1U << (pos_in_small_block + 1)) - 1;
+        unsigned int masked_key = key & mask;
+        
+        return count + popcount_lookup[masked_key];
     }
 
     int rank_naive(int i) const {
@@ -128,7 +138,7 @@ int main() {
     double memory_mb = memory_kb / 1024;
 
     std::cout << "Bit vector size: " << bit_vector.size() << " bits" << std::endl;
-    std::cout << "Memory usage (dynamic blocks + lookup): " << memory_bytes << " bytes (" 
+    std::cout << "Memory usage (all indices + lookup): " << memory_bytes << " bytes (" 
               << std::fixed << std::setprecision(2) << memory_kb << " KB, " 
               << memory_mb << " MB)" << std::endl;
     
