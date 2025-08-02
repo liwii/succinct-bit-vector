@@ -10,62 +10,72 @@
 class BitVector {
 private:
     std::vector<bool> bits;
-    std::vector<int> rank_index;
-    int block_size;
+    std::vector<unsigned int> rank_large_blocks;
+    std::vector<unsigned short> rank_small_blocks;
+    int large_block_size;
+    int small_block_size;
 
 public:
     BitVector(int num_bits) {
-        // Initialize bits
         bits.resize(num_bits);
         std::srand(static_cast<unsigned int>(std::time(nullptr)));
         for (int i = 0; i < num_bits; ++i) {
             bits[i] = std::rand() % 2;
         }
 
-        // Initialize rank index
-        int log_num_bits = std::log2(num_bits);
-        block_size = log_num_bits * log_num_bits;
-        if (block_size == 0) block_size = 1; // Avoid division by zero for small num_bits
-        int num_blocks = (num_bits + block_size - 1) / block_size;
-        rank_index.resize(num_blocks, 0);
+        int log_n = (num_bits > 1) ? std::log2(num_bits) : 0;
+        large_block_size = log_n * log_n;
+        small_block_size = std::max(1, log_n / 2);
 
-        int current_rank = 0;
+        int num_large_blocks = (num_bits + large_block_size - 1) / large_block_size;
+        rank_large_blocks.resize(num_large_blocks + 1, 0);
+
+        int num_small_blocks = (num_bits + small_block_size - 1) / small_block_size;
+        rank_small_blocks.resize(num_small_blocks + 1, 0);
+
+        unsigned int current_large_rank = 0;
+        unsigned short current_small_rank = 0;
         for (int i = 0; i < num_bits; ++i) {
-            if (i % block_size == 0) {
-                rank_index[i / block_size] = current_rank;
+            if (i % large_block_size == 0) {
+                rank_large_blocks[i / large_block_size] = current_large_rank;
+                current_small_rank = 0;
+            }
+            if (i % small_block_size == 0) {
+                rank_small_blocks[i / small_block_size] = current_small_rank;
             }
             if (bits[i]) {
-                current_rank++;
+                current_large_rank++;
+                current_small_rank++;
             }
         }
     }
 
     size_t memory_usage_bytes() const {
-        size_t bits_memory = bits.capacity() / 8;
-        size_t index_memory = rank_index.size() * sizeof(int);
-        return bits_memory + index_memory;
+        size_t bits_mem = bits.capacity() / 8;
+        size_t large_idx_mem = rank_large_blocks.size() * sizeof(unsigned int);
+        size_t small_idx_mem = rank_small_blocks.size() * sizeof(unsigned short);
+        return bits_mem + large_idx_mem + small_idx_mem;
     }
 
     int rank(int i) const {
         if (i < 0 || i >= bits.size()) return -1;
 
-        int block_idx = i / block_size;
-        int rank_at_block_start = rank_index[block_idx];
+        int large_idx = i / large_block_size;
+        int small_idx = i / small_block_size;
+        int scan_start = small_idx * small_block_size;
+
+        int count = rank_large_blocks[large_idx] + rank_small_blocks[small_idx];
         
-        int rank_in_block = 0;
-        int start_of_block = block_idx * block_size;
-        // This loop is much shorter than rank_naive
-        for (int j = start_of_block; j <= i; ++j) {
-            if (bits[j]) {
-                rank_in_block++;
+        for (int k = scan_start; k <= i; ++k) {
+            if (bits[k]) {
+                count++;
             }
         }
-        return rank_at_block_start + rank_in_block;
+        return count;
     }
 
     int rank_naive(int i) const {
         if (i < 0 || i >= bits.size()) return -1;
-        // The original, simple implementation
         return std::count(bits.begin(), bits.begin() + i + 1, true);
     }
 
@@ -74,7 +84,6 @@ public:
     }
 };
 
-// Helper to format the output table
 void print_header() {
     std::cout << std::left 
               << std::setw(12) << "Index"
@@ -90,13 +99,12 @@ int main() {
     const int num_bits = 1 << 20; // 2^20
     BitVector bit_vector(num_bits);
 
-    // Report memory usage
     size_t memory_bytes = bit_vector.memory_usage_bytes();
     double memory_kb = static_cast<double>(memory_bytes) / 1024;
     double memory_mb = memory_kb / 1024;
 
     std::cout << "Bit vector size: " << bit_vector.size() << " bits" << std::endl;
-    std::cout << "Memory usage (with index): " << memory_bytes << " bytes (" 
+    std::cout << "Memory usage (2-level index): " << memory_bytes << " bytes (" 
               << std::fixed << std::setprecision(2) << memory_kb << " KB, " 
               << memory_mb << " MB)" << std::endl;
     
@@ -112,13 +120,11 @@ int main() {
     };
 
     for (int index : test_indices) {
-        // Time the indexed rank
         auto start_indexed = std::chrono::high_resolution_clock::now();
         int rank_result_indexed = bit_vector.rank(index);
         auto end_indexed = std::chrono::high_resolution_clock::now();
         auto time_indexed = std::chrono::duration_cast<std::chrono::microseconds>(end_indexed - start_indexed);
 
-        // Time the naive rank
         auto start_naive = std::chrono::high_resolution_clock::now();
         int rank_result_naive = bit_vector.rank_naive(index);
         auto end_naive = std::chrono::high_resolution_clock::now();
