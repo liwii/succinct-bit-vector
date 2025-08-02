@@ -50,12 +50,15 @@ The `rank(i)` operation uses a three-level lookup strategy:
 
 ### O(1) Select
 
-The `select(k)` operation uses a different, powerful strategy to find the k-th '1':
-1.  **Coarse-Grained Index:** An initial index (`select_index`) points to the start of blocks that each contain `(log2(n))^2` set bits. This quickly narrows down the search to a specific block.
-2.  **Dense vs. Sparse Block Strategy:** The algorithm then uses a different strategy depending on the nature of that block:
-    -   **Dense Blocks:** If the block's width in bits is small (less than `(log2(n))^4`), it's considered "dense". For these, we build a direct lookup table containing the exact position of every '1'. `select` becomes a single array lookup.
-    -   **Sparse Blocks:** If the block's width is large, it's considered "sparse". For these, we build a **k-ary search tree** (where `k = sqrt(log2(n))`) over the block. This allows us to navigate the huge, sparse range in a constant number of steps.
-3.  **Dispatch:** The `select` function first checks if the target block is dense or sparse and dispatches to the appropriate, O(1) strategy.
+The `select(k)` operation finds the position of the k-th '1'. It achieves its speed by using a coarse-grained index and then dispatching to one of two strategies based on the properties of the block being searched.
+
+1.  **Coarse-Grained Index:** An initial index (`select_index`) points to the start of blocks that each contain a fixed number of set bits (`(log2(n))^2`). This quickly narrows the search space.
+
+2.  **Dense vs. Sparse Block Strategy:** The implementation then distinguishes between blocks based on their bit-width to employ a memory-optimized strategy for its auxiliary structures.
+    -   **Sparse Blocks:** If a block's width is large (greater than `(log2(n))^4`), it is considered "sparse". For these blocks, a **direct lookup table** is built, storing the exact position of each of the `(log2(n))^2` ones. This minimizes the memory footprint of the index for these large blocks.
+    -   **Dense Blocks:** If a block's width is small, it is considered "dense". For these, a **k-ary search tree** (where `k = sqrt(log2(n))`) is built. This structure allows for a constant-time traversal to the target '1'.
+
+3.  **Dispatch:** The `select` function checks if the target block is sparse or dense and uses the corresponding structure. While the query time is O(1) in both cases, this inverted logic prioritizes minimizing the memory of the auxiliary indices over minimizing the pre-computation time, which can be significant for the sparse blocks.
 
 ## Performance
 
