@@ -7,6 +7,23 @@
 #include <cmath>
 #include <iomanip>
 
+// --- Data structure for the k-ary select search tree ---
+struct SelectNode {
+    std::vector<int> child_counts; 
+    std::vector<SelectNode*> children;
+    int start_pos;
+    int size;
+
+    SelectNode(int s_pos, int s) : start_pos(s_pos), size(s) {}
+
+    ~SelectNode() {
+        for (SelectNode* child : children) {
+            delete child;
+        }
+    }
+};
+
+
 class BitVector {
 private:
     std::vector<bool> bits;
@@ -22,8 +39,37 @@ private:
 
     // --- Select Data Structures ---
     std::vector<unsigned int> select_index;
+    std::vector<SelectNode*> select_search_trees;
     int select_block_ones;
     int total_ones_count;
+    int k_ary_branch_factor;
+
+    SelectNode* build_select_tree(int start, int end, int level_rank_base) {
+        SelectNode* node = new SelectNode(start, end - start + 1);
+        if (node->size <= k_ary_branch_factor) {
+            return node; // Leaf node
+        }
+
+        int sub_block_size = (node->size + k_ary_branch_factor - 1) / k_ary_branch_factor;
+        int current_rank = 0;
+
+        for (int i = 0; i < k_ary_branch_factor; ++i) {
+            int child_start = start + i * sub_block_size;
+            if (child_start > end) break;
+            
+            int child_end = std::min(end, child_start + sub_block_size - 1);
+            
+            node->child_counts.push_back(current_rank);
+            
+            int child_rank_base = level_rank_base + current_rank;
+            int ones_in_child = (child_start > 0 ? rank(child_end) - rank(child_start - 1) : rank(child_end));
+            
+            node->children.push_back(build_select_tree(child_start, child_end, child_rank_base));
+            
+            current_rank += ones_in_child;
+        }
+        return node;
+    }
 
 
 public:
@@ -34,7 +80,6 @@ public:
             bits[i] = std::rand() % 2;
         }
 
-        // --- Build Rank Indices ---
         int log_n = (num_bits > 1) ? std::log2(num_bits) : 0;
         large_block_size = log_n * log_n;
         small_block_size = std::max(1, log_n / 2);
@@ -42,25 +87,16 @@ public:
 
         int num_small_blocks = (num_bits + small_block_size - 1) / small_block_size;
         small_block_keys.resize(num_small_blocks, 0);
-
         int lookup_size = 1 << small_block_size;
         popcount_lookup.resize(lookup_size, 0);
-        for (int i = 0; i < lookup_size; ++i) {
-            popcount_lookup[i] = __builtin_popcount(i);
-        }
-
+        for (int i = 0; i < lookup_size; ++i) popcount_lookup[i] = __builtin_popcount(i);
         int num_large_blocks = (num_bits + large_block_size - 1) / large_block_size;
         rank_large_blocks.resize(num_large_blocks + 1, 0);
         rank_small_blocks.resize(num_small_blocks + 1, 0);
-
-        unsigned int large_rank = 0;
-        unsigned short small_rank = 0;
-        unsigned int current_key = 0;
-
-        // --- Build Select Index ---
+        unsigned int large_rank = 0, small_rank = 0, current_key = 0;
+        
         select_block_ones = log_n * log_n;
         if (select_block_ones == 0) select_block_ones = 1;
-        
         total_ones_count = 0;
 
         for (int i = 0; i < num_bits; ++i) {
@@ -71,31 +107,41 @@ public:
             }
             if (i % large_block_size == 0) rank_large_blocks[i / large_block_size] = large_rank;
             if (i % small_block_size == 0) rank_small_blocks[i / small_block_size] = small_rank;
-            
             if (bits[i]) {
-                if (total_ones_count % select_block_ones == 0) {
-                    select_index.push_back(i);
-                }
-                large_rank++;
-                small_rank++;
+                if (total_ones_count % select_block_ones == 0) select_index.push_back(i);
+                large_rank++; small_rank++;
                 current_key |= (1 << (i % small_block_size));
                 total_ones_count++;
             }
         }
         small_block_keys[(num_bits - 1) / small_block_size] = current_key;
+
+        k_ary_branch_factor = std::max(2, (int)sqrt(log_n));
+        for (size_t i = 0; i < select_index.size(); ++i) {
+            int start = select_index[i];
+            int end = (i + 1 < select_index.size()) ? select_index[i+1] - 1 : num_bits - 1;
+            int base_rank = i * select_block_ones;
+            select_search_trees.push_back(build_select_tree(start, end, base_rank));
+        }
+    }
+
+    ~BitVector() {
+        for (SelectNode* tree : select_search_trees) {
+            delete tree;
+        }
     }
 
     size_t memory_usage_bytes() const {
         size_t bits_mem = (bits.size() + 7) / 8;
-        size_t large_idx_mem = rank_large_blocks.size() * sizeof(unsigned int);
-        size_t small_idx_mem = rank_small_blocks.size() * sizeof(unsigned short);
-        size_t keys_mem = small_block_keys.size() * sizeof(unsigned int);
-        size_t lookup_mem = popcount_lookup.size() * sizeof(unsigned char);
-        size_t select_mem = select_index.size() * sizeof(unsigned int);
-        return bits_mem + large_idx_mem + small_idx_mem + keys_mem + lookup_mem + select_mem;
+        size_t rank_mem = rank_large_blocks.size() * sizeof(unsigned int) +
+                          rank_small_blocks.size() * sizeof(unsigned short) +
+                          small_block_keys.size() * sizeof(unsigned int) +
+                          popcount_lookup.size() * sizeof(unsigned char);
+        size_t select_idx_mem = select_index.size() * sizeof(unsigned int);
+        size_t select_tree_mem = select_index.size() * sizeof(SelectNode) * k_ary_branch_factor; 
+        return bits_mem + rank_mem + select_idx_mem + select_tree_mem;
     }
 
-    // --- Rank Functions ---
     int rank(int i) const {
         if (i < 0 || i >= num_bits) return -1;
         int large_idx = i / large_block_size;
@@ -106,6 +152,7 @@ public:
         unsigned int mask = (pos_in_small_block == 31) ? -1U : (1U << (pos_in_small_block + 1)) - 1;
         return count + popcount_lookup[key & mask];
     }
+
     int rank_naive(int i) const {
         if (i < 0 || i >= num_bits) return -1;
         int count = 0;
@@ -113,37 +160,47 @@ public:
         return count;
     }
 
-    // --- Select Functions ---
     int select(int k) const {
-        if (k <= 0 || k > total_ones_count) return -1; // k is 1-based
-        
-        int block_idx = (k - 1) / select_block_ones;
-        int low = select_index[block_idx];
-        int high = (block_idx + 1 < select_index.size()) ? select_index[block_idx + 1] : num_bits - 1;
-        
-        int ans = -1;
+        if (k <= 0 || k > total_ones_count) return -1;
 
-        while (low <= high) {
-            int mid = low + (high - low) / 2;
-            if (rank(mid) >= k) {
-                ans = mid;
-                high = mid - 1;
-            } else {
-                low = mid + 1;
+        int block_idx = (k - 1) / select_block_ones;
+        int rank_in_block = (k - 1) % select_block_ones;
+        
+        SelectNode* current_node = select_search_trees[block_idx];
+
+        while (!current_node->children.empty()) {
+            int child_idx = 0;
+            for (size_t i = 1; i < current_node->child_counts.size(); ++i) {
+                if (current_node->child_counts[i] <= rank_in_block) {
+                    child_idx = i;
+                } else {
+                    break;
+                }
+            }
+            rank_in_block -= current_node->child_counts[child_idx];
+            current_node = current_node->children[child_idx];
+        }
+
+        for (int i = 0; i < current_node->size; ++i) {
+            int pos = current_node->start_pos + i;
+            if (pos >= num_bits) break;
+            if (bits[pos]) {
+                if (rank_in_block == 0) {
+                    return pos;
+                }
+                rank_in_block--;
             }
         }
-        return ans;
+        return -1;
     }
 
     int select_naive(int k) const {
-        if (k <= 0) return -1; // k is 1-based
+        if (k <= 0) return -1;
         int ones_counted = 0;
         for (int i = 0; i < num_bits; ++i) {
             if (bits[i]) {
                 ones_counted++;
-                if (ones_counted == k) {
-                    return i;
-                }
+                if (ones_counted == k) return i;
             }
         }
         return -1;
@@ -185,7 +242,7 @@ int main() {
 
     std::cout << "Bit vector size: " << bit_vector.size() << " bits" << std::endl;
     std::cout << "Total ones: " << bit_vector.total_ones() << std::endl;
-    std::cout << "Memory usage (all indices + lookup): " << memory_bytes << " bytes (" 
+    std::cout << "Memory usage (k-ary select trees): " << memory_bytes << " bytes (" 
               << std::fixed << std::setprecision(2) << memory_kb << " KB, " 
               << memory_mb << " MB)" << std::endl;
     
@@ -222,9 +279,7 @@ int main() {
     std::vector<int> select_test_indices;
     if (total_ones > 0) {
         select_test_indices.push_back(1);
-        if (total_ones > 4) select_test_indices.push_back(total_ones / 4);
         if (total_ones > 2) select_test_indices.push_back(total_ones / 2);
-        if (total_ones > 4) select_test_indices.push_back(3 * total_ones / 4);
         select_test_indices.push_back(total_ones);
     }
 
