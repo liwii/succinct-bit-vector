@@ -106,6 +106,12 @@ public:
         unsigned int mask = (pos_in_small_block == 31) ? -1U : (1U << (pos_in_small_block + 1)) - 1;
         return count + popcount_lookup[key & mask];
     }
+    int rank_naive(int i) const {
+        if (i < 0 || i >= num_bits) return -1;
+        int count = 0;
+        for (int j = 0; j <= i; ++j) if (bits[j]) count++;
+        return count;
+    }
 
     // --- Select Functions ---
     int select(int k) const {
@@ -117,7 +123,6 @@ public:
         
         int ans = -1;
 
-        // Binary search within the block
         while (low <= high) {
             int mid = low + (high - low) / 2;
             if (rank(mid) >= k) {
@@ -148,6 +153,17 @@ public:
     int total_ones() const { return total_ones_count; }
 };
 
+void print_rank_header() {
+    std::cout << std::left 
+              << std::setw(12) << "Index"
+              << std::setw(18) << "Indexed Result"
+              << std::setw(18) << "Naive Result"
+              << std::setw(25) << "Indexed Time (us)"
+              << std::setw(25) << "Naive Time (us)"
+              << std::endl;
+    std::cout << std::string(98, '-') << std::endl;
+}
+
 void print_select_header() {
     std::cout << std::left 
               << std::setw(12) << "K-th One"
@@ -173,20 +189,46 @@ int main() {
               << std::fixed << std::setprecision(2) << memory_kb << " KB, " 
               << memory_mb << " MB)" << std::endl;
     
+    // --- Rank Performance Comparison ---
+    std::cout << "\n--- Rank Performance Comparison ---" << std::endl;
+    print_rank_header();
+    std::vector<int> rank_test_indices = {
+        0, num_bits / 4, num_bits / 2, 3 * num_bits / 4, num_bits - 1
+    };
+    for (int index : rank_test_indices) {
+        auto start_indexed = std::chrono::high_resolution_clock::now();
+        int rank_result_indexed = bit_vector.rank(index);
+        auto end_indexed = std::chrono::high_resolution_clock::now();
+        auto time_indexed = std::chrono::duration_cast<std::chrono::microseconds>(end_indexed - start_indexed);
+
+        auto start_naive = std::chrono::high_resolution_clock::now();
+        int rank_result_naive = bit_vector.rank_naive(index);
+        auto end_naive = std::chrono::high_resolution_clock::now();
+        auto time_naive = std::chrono::duration_cast<std::chrono::microseconds>(end_naive - start_naive);
+
+        std::cout << std::left << std::setw(12) << index
+                  << std::setw(18) << rank_result_indexed
+                  << std::setw(18) << rank_result_naive
+                  << std::setw(25) << time_indexed.count()
+                  << std::setw(25) << time_naive.count()
+                  << std::endl;
+    }
+
+    // --- Select Performance Comparison ---
     std::cout << "\n--- Select Performance Comparison ---" << std::endl;
     print_select_header();
 
     int total_ones = bit_vector.total_ones();
-    std::vector<int> test_indices;
+    std::vector<int> select_test_indices;
     if (total_ones > 0) {
-        test_indices.push_back(1);
-        if (total_ones > 4) test_indices.push_back(total_ones / 4);
-        if (total_ones > 2) test_indices.push_back(total_ones / 2);
-        if (total_ones > 4) test_indices.push_back(3 * total_ones / 4);
-        test_indices.push_back(total_ones);
+        select_test_indices.push_back(1);
+        if (total_ones > 4) select_test_indices.push_back(total_ones / 4);
+        if (total_ones > 2) select_test_indices.push_back(total_ones / 2);
+        if (total_ones > 4) select_test_indices.push_back(3 * total_ones / 4);
+        select_test_indices.push_back(total_ones);
     }
 
-    for (int k : test_indices) {
+    for (int k : select_test_indices) {
         auto start_indexed = std::chrono::high_resolution_clock::now();
         int result_indexed = bit_vector.select(k);
         auto end_indexed = std::chrono::high_resolution_clock::now();
