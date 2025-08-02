@@ -1,1 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# C++
+build/
+bin/
+*.o
+bitvector_test
+
+# General
 .env
